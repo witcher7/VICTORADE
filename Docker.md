@@ -149,3 +149,17 @@ To set the name of the docker machine
 # DOCKER -v /folder : /folder
 To attach system folder with container folder. 
 
+# DOCKER STOP $(docker ps -q)
+To stop all running containers
+
+# DOCKER RM $(docker ps -a -q)
+TO remove all running containers
+
+# DOCKER RMI $(docker images -a -q)
+to delete all docker images
+
+# DOCKER RM $(DOCKER PS -a -f status=exited) -q
+To remove all exited containers
+
+# DOCKER STATS CONTAINER_NAME
+To see the statistics of a container
