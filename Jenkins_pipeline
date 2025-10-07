@@ -1,0 +1,110 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'jdk17'
+        nodejs 'nodejs'
+    }
+
+    environment {
+        SCANNER_HOME = tool 'sonarqube-scanner'
+        DOCKER_IMAGE = "rg7121/swiggy-cicd:${BUILD_NUMBER}"
+        AWS_DEFAULT_REGION = 'ap-south-1'
+        // These 2 lines assume you added AWS creds as Jenkins credentials (recommended)
+        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/witcher7/Swiggy-app-DevSecOps.git'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube-Server') {
+                    sh '''$SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=Swiggy-CI \
+                        -Dsonar.projectKey=Swiggy-CI'''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'SonarQube-Token'
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh "npm install"
+            }
+        }
+
+        stage('Trivy FS Scan') {
+            steps {
+                sh "trivy fs . > trivy-fs.txt"
+                archiveArtifacts artifacts: 'trivy-fs.txt', onlyIfSuccessful: true
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub', toolName: 'docker') {
+                        sh """
+                        docker build -t ${DOCKER_IMAGE} .
+                        docker push ${DOCKER_IMAGE}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image ${DOCKER_IMAGE} > trivy-image.txt"
+                archiveArtifacts artifacts: 'trivy-image.txt', onlyIfSuccessful: true
+            }
+        }
+
+        stage('Patch K8s Manifests') {
+            steps {
+                // This will update the deployment.yaml image to the new tag
+                sh """
+                sed -i 's|image: .*|image: ${DOCKER_IMAGE}|' k8s/deployment.yaml
+                """
+                // Optionally, archive the patched manifest for traceability
+                archiveArtifacts artifacts: 'k8s/deployment.yaml', onlyIfSuccessful: true
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withCredentials([file(credentialsId: 'eks-kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                    kubectl apply -f Kubernetes/deployment.yaml
+                    kubectl apply -f Kubernetes/service.yaml
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
